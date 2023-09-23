@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 mod basic_block;
 mod cfg;
 mod utils;
@@ -11,7 +13,15 @@ fn main() {
         let mut builder = CfgBuilder::new();
         let mut cfg = builder.build(func);
         cfg.remove_unreachable();
-        let dom_tree = cfg.get_dominator_tree();
-        println!("{:?}", dom_tree);
+        println!("{cfg}");
+        cfg.output_graphviz("/Users/ggd/projects/ssa/ihatemyself");
+        println!("======================================================================================");
+        let idoms = cfg.get_idoms();
+        let df = cfg.get_dominance_frontiers(idoms.clone());
+        println!("{:?}", df);
+        println!("======================================================================================");
+        cfg.insert_phi_nodes(df);
+        cfg.rename_variables(idoms);
+        println!("{cfg}");
     }
 }

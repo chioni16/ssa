@@ -1,5 +1,5 @@
 use petgraph::dot::{Config, Dot};
-use petgraph::Graph;
+use petgraph::{Directed, Graph, Undirected};
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -38,4 +38,34 @@ where
 
     let child_stdin = child.stdin.as_mut().unwrap();
     child_stdin.write_all(contents.as_bytes()).unwrap();
+}
+
+pub fn assoc_list_to_directed_graph<N>(list: Vec<(N, N)>) -> Graph<N, (), Directed, u32>
+where
+    N: std::fmt::Debug,
+{
+    let mut graph = Graph::default();
+    for (src, dst) in list {
+        let src = graph.add_node(src);
+        let dst = graph.add_node(dst);
+        graph.add_edge(src, dst, ());
+    }
+    graph
+}
+
+pub fn assoc_list_to_undirected_graph<N>(list: Vec<(N, N)>) -> Graph<N, (), Undirected, u32>
+where
+    N: std::fmt::Debug,
+{
+    let mut graph: Graph<N, (), Undirected> = Graph::default();
+    for (src, dst) in list {
+        let src = graph.add_node(src);
+        let dst = graph.add_node(dst);
+        graph.add_edge(src, dst, ());
+    }
+    graph
+}
+
+pub fn extract_first_part(name: &str) -> &str {
+    name.split('.').next().unwrap()
 }
