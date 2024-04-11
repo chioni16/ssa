@@ -18,9 +18,9 @@ type DominanceFrontiers = HashMap<NodeIndex, HashSet<NodeIndex>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Cfg {
-    entry_label: Label,
-    blocks: HashMap<Label, BasicBlock>,
-    graph: Graph<Label, (), Directed, u32>,
+    pub entry_label: Label,
+    pub blocks: HashMap<Label, BasicBlock>,
+    pub graph: Graph<Label, (), Directed, u32>,
 }
 
 #[allow(dead_code)]
@@ -53,6 +53,8 @@ impl Cfg {
             .map(|ni| (ni, all_nodes.clone()))
             .collect();
         *doms.get_mut(&entry_node).unwrap() = HashSet::from_iter([entry_node]);
+
+        // https://ethz.ch/content/dam/ethz/special-interest/infk/inst-cs/lst-dam/documents/Education/Classes/Spring2016/2810_Advanced_Compiler_Design/Homework/slides_hw1.pdf
 
         let mut work_queue: VecDeque<NodeIndex> = VecDeque::from_iter(self.graph.node_indices());
         while let Some(el_node) = work_queue.pop_front() {
@@ -109,6 +111,8 @@ impl Cfg {
     }
 
     pub fn get_dominance_frontiers(&mut self, idoms: IDoms) -> DominanceFrontiers {
+        // https://ethz.ch/content/dam/ethz/special-interest/infk/inst-cs/lst-dam/documents/Education/Classes/Spring2016/2810_Advanced_Compiler_Design/Homework/slides_hw1.pdf
+
         let mut df: HashMap<NodeIndex, HashSet<NodeIndex>> = self
             .graph
             .node_indices()
@@ -198,8 +202,10 @@ impl Cfg {
             .map(|label| HashSet::from_iter(self.blocks[label].definitions.clone()))
             .fold(HashSet::new(), |acc, el| acc.union(&el).cloned().collect());
 
-        let mut reaching_variables: HashMap<String, usize> =
-            all_defs.iter().map(|(var, _)| (var.clone(), 0)).collect();
+        let mut reaching_variables: HashMap<String, Vec<usize>> = all_defs
+            .iter()
+            .map(|(var, _)| (var.clone(), vec![0]))
+            .collect();
 
         let mut dom_tree: HashMap<NodeIndex, HashSet<NodeIndex>> = HashMap::new();
         let mut root = NodeIndex::default();
@@ -212,75 +218,174 @@ impl Cfg {
             }
         }
 
+        // let mut root = NodeIndex::default();
+        // let dom_tree = idoms.into_iter().filter_map(|(child, parent)| {
+        //     if let Some(parent) = parent {
+        //         Some((parent, child))
+        //     } else {
+        //         root = child;
+        //         None
+        //     }
+        // }).collect();
+        // let dom_tree = utils::assoc_list_to_directed_graph(dom_tree);
+
         println!("reaching_variables: {:?}", reaching_variables);
         println!("dom_tree: {:?}", dom_tree);
         println!("root: {:?}", root);
 
-        let mut work_queue: VecDeque<NodeIndex> = VecDeque::from_iter([root]);
-        while let Some(block) = work_queue.pop_front() {
-            println!("{:?}", block);
-            let bl = &self.graph[block];
-            for inst in &mut self.blocks.get_mut(bl).unwrap().insts {
-                if !matches!(
-                    inst,
-                    Instruction::Value {
-                        op: ValueOps::Phi,
-                        ..
-                    }
-                ) {
-                    match inst {
-                        Instruction::Value { args, .. } | Instruction::Effect { args, .. } => {
-                            for arg in args {
-                                let version = reaching_variables.get(arg).copied().unwrap();
-                                *arg = format!("{}.{}", arg, version);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+        let mut visited = HashSet::new();
+        self.rename_variables_recursive(&dom_tree, root, &mut reaching_variables, &mut visited);
+    }
 
+    fn rename_variables_recursive(
+        &mut self,
+        dom_tree: &HashMap<NodeIndex, HashSet<NodeIndex>>,
+        block: NodeIndex,
+        reaching_variables: &mut HashMap<String, Vec<usize>>,
+        visited: &mut HashSet<NodeIndex>,
+    ) {
+        println!("current node: {:?}", block);
+        visited.insert(block.clone());
+        let start_versions = reaching_variables
+            .iter()
+            .map(|(var, versions)| (var.clone(), versions.last().copied().unwrap()))
+            .collect::<HashMap<_, _>>();
+
+        let bl = &self.graph[block];
+        for inst in &mut self.blocks.get_mut(bl).unwrap().insts {
+            if !matches!(
+                inst,
+                Instruction::Value {
+                    op: ValueOps::Phi,
+                    ..
+                }
+            ) {
                 match inst {
-                    Instruction::Constant { dest, .. } | Instruction::Value { dest, .. } => {
-                        let version = reaching_variables.get(dest).copied().unwrap();
-                        *dest = format!("{}.{}", dest, version);
-                        let dest = utils::extract_first_part(dest);
-                        let _ = reaching_variables.insert(dest.to_string(), version + 1);
+                    Instruction::Value { args, .. } | Instruction::Effect { args, .. } => {
+                        for arg in args {
+                            let latest_version = reaching_variables
+                                .get(arg)
+                                .unwrap()
+                                .last()
+                                .copied()
+                                .unwrap();
+                            *arg = format!("{}.{}", arg, latest_version);
+                        }
                     }
                     _ => {}
                 }
             }
 
-            for succ in self
-                .graph
-                .edges_directed(block, Outgoing)
-                .map(|edge| edge.target())
-            {
-                let sbl = &self.graph[succ];
-                for inst in &mut self.blocks.get_mut(sbl).unwrap().insts {
-                    if let Instruction::Value {
-                        op: ValueOps::Phi,
-                        dest,
-                        args,
-                        labels,
-                        ..
-                    } = inst
-                    {
-                        let dest = utils::extract_first_part(dest);
-                        let version = reaching_variables.get(dest).copied().unwrap();
-                        args.push(format!("{dest}.{version}"));
-                        labels.push(bl.clone());
-                    }
+            match inst {
+                Instruction::Constant { dest, .. } | Instruction::Value { dest, .. } => {
+                    let prev_version = reaching_variables
+                        .get(dest)
+                        .unwrap()
+                        .last()
+                        .copied()
+                        .unwrap();
+
+                    reaching_variables
+                        .get_mut(dest)
+                        .unwrap()
+                        .push(prev_version + 1);
+
+                    *dest = format!("{}.{}", dest, prev_version + 1);
+                }
+                _ => {}
+            }
+        }
+
+        for succ in self
+            .graph
+            .edges_directed(block, Outgoing)
+            .map(|edge| edge.target())
+        {
+            let sbl = &self.graph[succ];
+            for inst in &mut self.blocks.get_mut(sbl).unwrap().insts {
+                if let Instruction::Value {
+                    op: ValueOps::Phi,
+                    dest,
+                    args,
+                    labels,
+                    ..
+                } = inst
+                {
+                    let dest = utils::extract_first_part(dest);
+                    let version = reaching_variables
+                        .get(dest)
+                        .unwrap()
+                        .last()
+                        .copied()
+                        .unwrap();
+                    args.push(format!("{dest}.{version}"));
+                    labels.push(bl.clone());
                 }
             }
+        }
 
-            for &child in dom_tree.get(&block).unwrap_or(&HashSet::new()) {
-                work_queue.push_back(child);
+        if let Some(children) = dom_tree.get(&block) {
+            for child in children {
+                if !visited.contains(child) {
+                    self.rename_variables_recursive(
+                        dom_tree,
+                        child.clone(),
+                        reaching_variables,
+                        visited,
+                    );
+                }
+            }
+        }
+
+        for (var, versions) in reaching_variables {
+            let start_version = start_versions[var];
+            while versions.last() != Some(&start_version) {
+                versions.pop();
             }
         }
     }
 
     pub fn output_graphviz(&self, filename: &str) {
         graph_to_svg(filename, &self.graph);
+    }
+
+    // Nodes identify instructions
+    // A tuple of Label (which uniquely identifies the block to which the instruction belongs) and the instruction index within the block
+    // To be called only after the SSA construction is completed
+    pub fn ssa_graph<'cfg>(&'cfg self) -> (Graph<(&'cfg Label, usize), (), Directed, u32>, HashMap<&'cfg String, (&'cfg Label, usize)>) {
+        let mut ssa_graph: Graph<(&'cfg Label, usize), ()> = Graph::new();
+        let mut names: HashMap<&String, (&Label, usize)> = HashMap::new();
+        let mut node_indices: HashMap<(&Label, usize), NodeIndex> = HashMap::new();
+
+        for (label, block) in &self.blocks {
+            for (i, inst) in block.insts.iter().enumerate() {
+                let ni = ssa_graph.add_node((label, i));
+                node_indices.insert((label, i), ni);
+                match inst {
+                    Instruction::Constant { dest, .. } | Instruction::Value { dest, .. } => {
+                        names.insert(dest, (label, i));
+                    }
+                    Instruction::Effect { .. } => {}
+                }
+            }
+        }
+
+        for (label, block) in &self.blocks {
+            for (i, inst) in block.insts.iter().enumerate() {
+                match inst {
+                    Instruction::Constant { .. } => {}
+                    Instruction::Value { args, .. } | Instruction::Effect { args, .. } => {
+                        for arg in args {
+                            let src = node_indices[&names[arg]];
+                            let dest = node_indices[&(label, i)];
+                            ssa_graph.add_edge(src, dest, ());
+                        }
+                    }
+                }
+            }
+        }
+
+        (ssa_graph, names)
     }
 }
 

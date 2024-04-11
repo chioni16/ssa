@@ -2,6 +2,7 @@
 
 mod basic_block;
 mod cfg;
+mod optimisations;
 mod utils;
 
 use bril_rs::load_program;
